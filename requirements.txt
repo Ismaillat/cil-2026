@@ -1,0 +1,10 @@
+numpy
+pandas
+matplotlib
+scikit-learn
+jupyter
+
+# B2 / transformer baseline
+torch
+sentence-transformers
+transformers
