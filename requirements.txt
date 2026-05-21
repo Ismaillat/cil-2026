@@ -4,7 +4,9 @@ matplotlib
 scikit-learn
 jupyter
 
-# B2 / transformer baseline
+# Deep learning
 torch
-sentence-transformers
 transformers
+accelerate
+peft
+sentence-transformers
