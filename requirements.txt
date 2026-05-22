@@ -6,7 +6,10 @@ jupyter
 
 # Deep learning
 torch
-transformers
+transformers==4.57.6
 accelerate
-peft
 sentence-transformers
+
+# Tokenizer deps (mDeBERTa-v3 SentencePiece)
+sentencepiece
+protobuf
