@@ -41,6 +41,7 @@ def parse_args():
     ap.add_argument('--lr', type=float, default=2e-5)
     ap.add_argument('--max_length', type=int, default=256)
     ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--slow_tokenizer', action='store_true')
     return ap.parse_args()
 
 
@@ -63,7 +64,7 @@ def main():
     val_df = train.loc[val_idx].reset_index(drop=True)
     y_val = val_df['label'].values
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=not args.slow_tokenizer)
 
     train_ds = ReviewDataset(train_df['sentence'], tokenizer, args.max_length, train_df['label'])
     val_ds = ReviewDataset(val_df['sentence'], tokenizer, args.max_length, val_df['label'])
