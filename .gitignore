@@ -4,3 +4,14 @@ submissions/
 __pycache__/
 .ipynb_checkpoints/
 .DS_Store
+
+# LaTeX build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.bbl
+report/*.blg
+report/*.synctex.gz
+report/*.fdb_latexmk
+report/*.fls
+report/*.pdf
