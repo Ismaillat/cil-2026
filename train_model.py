@@ -13,6 +13,24 @@ from transformers import (
 from sklearn.metrics import mean_absolute_error
 
 
+class ReviewDataset(Dataset):
+    def __init__(self, texts, tokenizer, max_length, labels=None):
+        self.texts = list(texts)
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.labels = None if labels is None else list(labels)
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, i):
+        enc = self.tokenizer(self.texts[i], truncation=True, max_length=self.max_length)
+        item = {k: torch.tensor(v) for k, v in enc.items()}
+        if self.labels is not None:
+            item['labels'] = torch.tensor(int(self.labels[i]), dtype=torch.long)
+        return item
+
+
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', required=True)
@@ -47,22 +65,9 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
-    class ReviewDataset(Dataset):
-        def __init__(self, texts, labels=None):
-            self.texts = list(texts)
-            self.labels = None if labels is None else list(labels)
-        def __len__(self):
-            return len(self.texts)
-        def __getitem__(self, i):
-            enc = tokenizer(self.texts[i], truncation=True, max_length=args.max_length)
-            item = {k: torch.tensor(v) for k, v in enc.items()}
-            if self.labels is not None:
-                item['labels'] = torch.tensor(int(self.labels[i]), dtype=torch.long)
-            return item
-
-    train_ds = ReviewDataset(train_df['sentence'], train_df['label'])
-    val_ds = ReviewDataset(val_df['sentence'], val_df['label'])
-    test_ds = ReviewDataset(test['sentence'])
+    train_ds = ReviewDataset(train_df['sentence'], tokenizer, args.max_length, train_df['label'])
+    val_ds = ReviewDataset(val_df['sentence'], tokenizer, args.max_length, val_df['label'])
+    test_ds = ReviewDataset(test['sentence'], tokenizer, args.max_length)
 
     model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=5)
 
@@ -92,7 +97,7 @@ def main():
         seed=args.seed,
         report_to=[],
         logging_steps=200,
-        dataloader_num_workers=2,
+        dataloader_num_workers=0,
     )
 
     trainer = Trainer(
