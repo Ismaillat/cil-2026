@@ -1,5 +1,13 @@
-data/
-submissions/
+data/*.csv
+data/*.npy
+
+# submissions: track only the final ensemble; ignore intermediate ones
+submissions/*
+!submissions/ensemble.csv
+
+# preds: track all softmax probabilities (so teammates can ensemble / meta-model)
+# (nothing to ignore here)
+
 .venv/
 __pycache__/
 .ipynb_checkpoints/
