@@ -27,12 +27,13 @@
 \theoremstyle{remark}
 \newtheorem{remark}[theorem]{Remark}
 
-\icmltitlerunning{Bilingual Sentiment Classification}
+\icmltitlerunning{Bilingual Ordinal Sentiment Classification}
 
 \begin{document}
 
 \twocolumn[
-\icmltitle{Ordinal Sentiment Classification of Bilingual Product Reviews}
+\icmltitle{Bilingual Ordinal Sentiment Classification \\
+           via Diversity Ensembling of Multilingual Encoders}
 
 \icmlsetsymbol{equal}{*}
 
@@ -46,7 +47,7 @@
 
 \icmlcorrespondingauthor{Ismail Lataoui}{ilataoui@ethz.ch}
 
-\icmlkeywords{Sentiment Classification, NLP, Ordinal Regression}
+\icmlkeywords{sentiment classification, ordinal regression, multilingual NLP, ensemble learning}
 
 \vskip 0.3in
 ]
@@ -54,166 +55,258 @@
 \printAffiliationsAndNotice{\icmlEqualContribution}
 
 \begin{abstract}
-% TODO: write last. 4 sentences: problem, why hard, what we do, what we find.
 We address ordinal sentiment classification of bilingual (German/English)
 product reviews, where each review is mapped to a star rating in
-$\{0,\dots,4\}$ and the evaluation metric is mean absolute error (MAE).
-We compare three representations of increasing richness---sparse TF--IDF,
-frozen multilingual sentence embeddings, and a fine-tuned multilingual
-transformer---and show that adapting the encoder to the task is the key
-driver of performance. We further introduce an MAE-optimal decoding rule
-that exploits the ordinal structure of the metric at no training cost.
-An ensemble of two diverse base encoders reaches a validation score of
-$0.908$ ($1-\mathrm{MAE}/4$), exceeding the strong baseline while remaining
-trainable on a single commodity GPU.
+$\{0,\dots,4\}$ and predictions are scored by mean absolute error (MAE).
+The task is harder than standard classification because errors are
+graded: confusing a one-star review with a five-star one is four times
+as costly as confusing it with a two-star one. We compare three text
+representations of increasing richness---sparse TF--IDF, frozen
+contextual embeddings, and fine-tuned multilingual transformers---and
+show that task adaptation, rather than scale, is the decisive factor on
+commodity hardware. We further introduce a metric-aware decoding rule
+that replaces $\arg\max$ with the median of the predictive distribution,
+and a diversity ensemble of two architecturally distinct multilingual
+encoders. Together these reach a validation score of
+$\boldsymbol{0.908}$ ($95\%$ bootstrap CI $[0.907, 0.910]$), above the
+strong reference, while training only base-size models on a single
+$11$\,GB GPU.
 \end{abstract}
 
 \section{Introduction}
 \label{sec:intro}
-Product reviews are a primary signal for consumers and sellers alike, and
-automatically recovering the star rating a reviewer assigned is a
-long-standing sentiment-analysis task. We study a variant with three
-properties that together make it non-trivial. First, the corpus is
-\emph{bilingual}: reviews are split roughly evenly between German and
-English, so a monolingual model would forfeit half the data. Second,
-predictions are scored by mean absolute error (MAE) on a five-point scale,
-making the task \emph{ordinal}---confusing a one-star review with a
-five-star one is four times as costly as confusing it with a two-star one,
-unlike standard classification where every error is equal. Third, the text
+Star ratings inferred from product reviews are a long-studied signal in
+opinion mining, but the present setting combines three properties that
+together make it non-trivial. First, the corpus is \emph{bilingual}:
+reviews are split almost evenly between German and English, so a
+monolingual approach forfeits half the data. Second, predictions are
+scored by mean absolute error on a five-point scale, making the task
+\emph{ordinal}---one-versus-five errors are four times as costly as
+one-versus-two errors, unlike standard classification. Third, the text
 is \emph{noisy}: it contains typos, emojis, repeated characters
-(\textit{sooooo}), sarcasm, and genuinely ambiguous reviews.
+(e.g.\ \textit{sooooo}), sarcasm, and reviews whose body contradicts
+their title.
 
 A natural question is which representation of the text best captures
-sentiment under these constraints. We answer it empirically by comparing
-three families of increasing richness---sparse lexical features, frozen
-contextual embeddings, and task-adapted (fine-tuned) multilingual
-transformers---and find that adapting the encoder to the task is the
-decisive factor. We then show that two cheap, ordinal-aware techniques
-push performance further: a decoding rule matched to the MAE metric, and an
-ensemble of \emph{diverse} encoders that outperforms any single base model
-and sidesteps the instability of training a larger one on commodity
-hardware.
+sentiment under these constraints, and whether the gains compound with
+metric-aware decoding and model combination. We answer it empirically by
+comparing sparse lexical features, frozen contextual embeddings, and
+two fine-tuned multilingual transformers under an identical evaluation
+protocol; by deriving the Bayes-optimal point estimator under absolute
+error and applying it uniformly; and by ensembling architecturally
+diverse encoders rather than scaling a single one, motivated by the
+numerical instability of large-model training in half precision on the
+available hardware.
 
-Our contributions are:
+\paragraph{Contributions.}
 \begin{itemize}
-    \item A controlled comparison of sparse lexical features, frozen
-    contextual embeddings, and a fine-tuned multilingual encoder under an
-    identical data split and evaluation protocol
-    (\cref{sec:baselines,sec:main}).
-    \item An MAE-optimal decoding rule that replaces $\arg\max$ with the
-    median of the predictive distribution, lowering MAE at no training cost
-    (\cref{sec:decoding}).
-    \item A diversity ensemble of two multilingual encoders that exceeds the
-    strong single-model baseline (\cref{sec:ensemble}), motivated by the
-    observation that scaling to a single larger model is numerically
-    unstable in half precision on our GPUs (\cref{sec:discussion}).
+    \item A controlled three-rung comparison (sparse $\to$ frozen
+    contextual $\to$ fine-tuned) on a single canonical split, isolating
+    \emph{task adaptation} as the dominant performance factor
+    (\cref{sec:methods,sec:results}).
+    \item An MAE-optimal decoding rule applied to every model:
+    replacing the modal class by the median of the predictive
+    distribution lowers MAE at zero training cost
+    (\cref{sec:decoding,sec:ablation}).
+    \item A diversity ensemble of XLM-RoBERTa-base
+    \citep{conneau2020xlmr} and mDeBERTa-v3-base
+    \citep{he2023debertav3} that outperforms either model alone, is
+    stable in fp16, and avoids the half-precision instabilities of
+    XLM-R-large on Turing-class GPUs (\cref{sec:ensemble,sec:discussion}).
 \end{itemize}
 
-\section{Models and Methods}
-\label{sec:methods}
-
-\subsection{Data and exploratory analysis}
+\section{Data and Evaluation}
 \label{sec:data}
-The training set contains $252{,}000$ labeled reviews and the test set
-$168{,}000$. The five classes are \emph{exactly balanced} ($50{,}400$ each),
-so we use an unweighted loss and report accuracy alongside MAE without
-class re-weighting. All model selection uses a single $10\%$ stratified
-hold-out split with a fixed seed; we never tune on the public leaderboard,
-following standard practice to avoid overfitting to it.
+The training set comprises $n_{\text{train}}=252{,}000$ labeled reviews
+and the test set $n_{\text{test}}=168{,}000$. The five classes are
+\emph{exactly balanced} at $50{,}400$ each, so we use unweighted losses
+and report accuracy alongside MAE without re-weighting. All model
+selection uses a single $10\%$ stratified hold-out split of the training
+set with seed $42$ ($25{,}200$ reviews); we report all numbers on this
+held-out split and never tune on the public leaderboard.
 
-An exploratory pass informs three design choices. (i)~A language heuristic
-estimates $\approx\!52\%$ English and $\approx\!48\%$ German, with the split
-uniform across labels; we therefore use a \emph{multilingual} encoder
-rather than translating or training two monolingual models. (ii)~Each
-review is a short title followed by a body; the $99$th percentile length is
-$161$ words, so a maximum sequence length of $256$ tokens covers virtually
-all reviews while bounding compute. (iii)~Surface cues flagged as
-informative behave non-trivially: the frequency of ``\texttt{!}'' is
-\emph{U-shaped} in the rating (high for both one- and five-star reviews),
-so it signals \emph{intensity} rather than polarity. A model that relies on
-such cues alone would conflate the two extremes---the worst possible error
-under MAE---motivating representations that capture context.
+\paragraph{Bilingual composition.}
+A lightweight heuristic (umlaut characters and German function words)
+estimates $\approx\!52\%$ English and $\approx\!48\%$ German reviews,
+with the language distribution uniform across labels (within $\pm 2\%$).
+This motivates a \emph{multilingual} encoder over per-language models or
+machine translation: each model sees all $252$K samples and shares
+parameters across both languages.
 
-\subsection{Evaluation metric}
-\label{sec:metric}
-Ratings are encoded as $y \in \{0,\dots,4\}$ and scored by
+\paragraph{Length distribution.}
+Reviews consist of a short title followed by a body separated by a
+blank line; \cref{fig:length} plots the word-count distribution.
+The $99$th percentile is $161$ words, so truncating to $256$
+sub-word tokens covers virtually all reviews and bounds compute.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/length_hist}
+\caption{Distribution of review length in words, clipped at $300$.
+The $99$th percentile is $161$ words; we use a maximum tokenizer
+length of $256$, which covers $>\!99\%$ of inputs.}
+\label{fig:length}
+\end{figure}
+
+\paragraph{Surface cues are non-monotonic.}
+The challenge description flagged punctuation and repeated characters
+as informative. Inspection (\cref{fig:surface}) shows their behavior is
+not what a bag-of-features model would expect: the frequency of
+``\texttt{!}'' is \emph{U-shaped} in the rating, peaking at both
+one-star and five-star reviews, while the frequency of ``\texttt{?}''
+decreases monotonically as ratings improve. The first pattern is
+particularly damaging: a model that latches onto ``\texttt{!}'' as a
+polarity signal will confuse the two extremes---the worst possible
+mistake under MAE.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/surface_features}
+\caption{Mean count of ``\texttt{!}'' (left) and ``\texttt{?}''
+(right) per review, by true star rating. The U-shape of
+``\texttt{!}'' implies it signals \emph{intensity}, not polarity,
+and motivates context-aware representations.}
+\label{fig:surface}
+\end{figure}
+
+\paragraph{Evaluation metric.}
+Ratings are encoded as $y\in\{0,\dots,4\}$ and scored by
 \begin{equation}
 \label{eq:score}
-    L(\hat{\mathbf y}, \mathbf y) = 1 - \frac{1}{4n}\sum_{i=1}^{n} |y_i - \hat y_i|
-    = 1 - \frac{\mathrm{MAE}}{4},
+L(\hat{\mathbf{y}},\mathbf{y})
+  = 1-\tfrac{1}{4n}\sum_{i=1}^{n}|y_i-\hat y_i|
+  = 1-\tfrac{\mathrm{MAE}}{4}.
 \end{equation}
-so the score lies in $[0,1]$ and larger ordinal errors are penalized
-proportionally. This metric drives both our loss-agnostic decoding rule
-(\cref{sec:decoding}) and our emphasis on avoiding extreme misclassifications.
+Errors are penalized in proportion to their ordinal magnitude. This
+choice drives both our decoding rule (\cref{sec:decoding}) and our
+emphasis on avoiding extreme misclassifications.
+
+\section{Methods}
+\label{sec:methods}
 
 \subsection{Baselines}
 \label{sec:baselines}
-\textbf{B1: TF--IDF + logistic regression.} We vectorize each review with
-TF--IDF over unigrams and bigrams ($50{,}000$ features, sublinear term
-frequency) and fit a multinomial logistic regression. This captures
-predictive lexical tokens directly but ignores word order and context.
+\textbf{B1: TF--IDF + logistic regression.} Each review is mapped to a
+sparse vector of unigram and bigram TF--IDF features
+($50{,}000$ features, sublinear term frequency, document-frequency
+threshold $\geq\!2$). A multinomial logistic regression
+($\ell_2$-regularized, $C{=}1$) is trained directly on this vector.
+This captures the most discriminative tokens (e.g.\ \textit{terrible},
+\textit{perfekt}, and the literal phrase \textit{one star}) but
+discards word order and context.
 
-\textbf{B2: Frozen encoder + logistic regression.} We encode each review
-with a frozen multilingual sentence transformer
-(\texttt{paraphrase-multilingual-MiniLM-L12-v2}, $384$ dimensions) and fit
-the same logistic regression on the embeddings. This \emph{linear probe}
-isolates the value of pre-trained contextual semantics \emph{without} task
-adaptation, and contrasts directly with B1 (dense vs.\ sparse) and with our
-main method (frozen vs.\ fine-tuned).
+\textbf{B2: Frozen multilingual encoder + LogReg.} Each review is
+encoded by a frozen multilingual sentence transformer
+(\texttt{paraphrase-multilingual-MiniLM-L12-v2},
+\citealt{reimers2019sbert}, $384$ dimensions). The same logistic
+regression is trained on these dense embeddings---a \emph{linear
+probe} that isolates the value of pre-trained contextual semantics
+\emph{without} task adaptation, and contrasts directly with B1
+(dense vs.\ sparse) and with our main method (frozen vs.\ fine-tuned).
 
 \subsection{Fine-tuned multilingual transformers}
 \label{sec:main}
-Our main models fine-tune a pre-trained multilingual encoder end-to-end
-with a five-way classification head. We use two architecturally distinct
-encoders of comparable size: XLM-RoBERTa-base~\citep{conneau2020xlmr} and
-mDeBERTa-v3-base, the latter using disentangled attention. Both are trained
-with AdamW (learning rate $2\times10^{-5}$, weight decay $0.01$, linear
-warmup over $6\%$ of steps), a maximum length of $256$ tokens, batch size
-$16$, for three epochs in mixed precision, selecting the checkpoint with the
-best validation score. Gradients are clipped to unit norm.
+The main models fine-tune a pre-trained multilingual encoder
+end-to-end with a five-way classification head over the
+\texttt{[CLS]}-pooled hidden state.
+We use two architecturally distinct encoders of comparable size:
+XLM-RoBERTa-base \citep{conneau2020xlmr} ($270$M parameters,
+sentence-piece, RoBERTa pre-training) and mDeBERTa-v3-base
+\citep{he2023debertav3} ($278$M parameters, disentangled attention,
+ELECTRA-style pre-training with gradient-disentangled embedding
+sharing). Both are trained with AdamW \citep{loshchilov2019adamw}
+under identical settings: learning rate $2{\times}10^{-5}$, weight
+decay $0.01$, linear warm-up over $6\%$ of steps, maximum sequence
+length $256$, per-device batch size $16$, three epochs, mixed
+precision (fp16) with gradient clipping at unit norm, on a single
+NVIDIA RTX $2080$\,Ti.
 
 \subsection{MAE-optimal decoding}
 \label{sec:decoding}
-Given predicted class probabilities $p = (p_0,\dots,p_4)$, the usual
-$\arg\max$ returns the \emph{mode}, which is optimal for $0/1$ loss. Under
-absolute-error loss the optimal point estimate is instead the \emph{median}
-of the predictive distribution---the smallest $k$ with
-$\sum_{j\le k} p_j \ge 0.5$. Because our metric (\cref{eq:score}) is
-MAE-based, we decode with the median for \emph{every} model. The rule needs
-no retraining and consistently reduces MAE: it trades a slightly lower exact
-accuracy for fewer large, costly errors.
+Each model outputs a probability vector $p=(p_0,\dots,p_4)$ for every
+review; a decoding rule maps $p$ to an integer prediction. The
+choice of rule is metric-dependent.
+
+\begin{proposition}
+\label{prop:median}
+For an integer-valued random variable $Y\in\{0,\dots,K\}$ with
+distribution $p$, the constant prediction minimising the expected
+absolute error $\mathbb{E}_Y[|Y-\hat y|]$ is the \emph{median}
+$\hat y^\star=\min\{k:\sum_{j\le k}p_j\geq \tfrac{1}{2}\}$, whereas the
+expected $0/1$ error is minimised by the mode $\arg\max_k p_k$.
+\end{proposition}
+
+\begin{proof}[Sketch]
+$\mathbb{E}[|Y-\hat y|]$ is piecewise linear and convex in $\hat y$;
+its right and left subgradients at $\hat y=k$ are
+$1-2\!\sum_{j\le k-1}p_j$ and $1-2\!\sum_{j\le k}p_j$, so $k$ is
+optimal iff both bracket zero, which is exactly the median condition.
+The $0/1$ result is immediate from
+$\mathbb{E}[\mathbf{1}\{Y\neq\hat y\}]=1-p_{\hat y}$.
+\end{proof}
+
+Since the leaderboard metric (\cref{eq:score}) is MAE-based, we decode
+with the median for \emph{every} model. The rule needs no retraining
+and accepts a small decrease in accuracy in exchange for fewer large,
+costly errors---exactly the trade-off MAE rewards.
 
 \subsection{Diversity ensemble}
 \label{sec:ensemble}
-Scaling to a single larger encoder (XLM-RoBERTa-large) is attractive but, on
-our hardware, half-precision training diverges and full precision does not
-fit in memory (\cref{sec:discussion}). Instead we exploit
-\emph{architectural diversity}: we average the predictive distributions of
-the two fine-tuned base encoders and apply the median decoder of
-\cref{sec:decoding}. Averaging probabilities of models that make
-\emph{different} errors reduces variance and improves the score over either
-model alone, at the cost of one additional fine-tuning run rather than a
-larger, unstable model.
+We scaled up by training two architecturally distinct
+\emph{base-size} models instead of a single larger one. Given the two
+fine-tuned models with predictive distributions $p^{(1)}$, $p^{(2)}$,
+the ensemble prediction averages their distributions and decodes with
+\cref{prop:median}:
+\begin{equation}
+\label{eq:ensemble}
+\bar p_i=\tfrac{1}{2}\big(p^{(1)}_i+p^{(2)}_i\big),\qquad
+\hat y^\star = \min\{k:\textstyle\sum_{j\le k}\bar p_j\geq 0.5\}.
+\end{equation}
+Averaging \emph{probabilities} (rather than hard labels) preserves
+each model's uncertainty; combining it with the median decoder
+ensures the final integer estimate remains MAE-optimal under the
+aggregated distribution. This choice is motivated empirically: an
+attempt to scale a single encoder to XLM-R-large diverged under fp16
+training on Turing-class GPUs (loss climbed above its random-init
+value, gradient norms exceeded $500$), while wider-range
+\texttt{bfloat16} is unsupported on those cards and full-precision
+training of a $560$M-parameter model exceeds the available
+$11$\,GB of VRAM. The two-base-model ensemble achieves a comparable
+effective capacity at a fraction of the memory footprint and with no
+numerical issues (\cref{sec:discussion}).
 
 \section{Results}
 \label{sec:results}
-% TODO: fill table with final numbers. Val from local split; LB from Kaggle.
+
+\subsection{Main comparison}
+\label{sec:main-comparison}
+All numbers in \cref{tab:main} are computed on the same $10\%$
+stratified hold-out split. Both fine-tuned encoders score above
+$0.90$; mDeBERTa-v3-base alone already outperforms XLM-R-base by
+$0.002$ score (a $2.4\%$ relative MAE reduction). Averaging the two
+distributions yields $0.9083$, a further $0.001$ gain over the better
+single model. The $95\%$ bootstrap confidence interval on the ensemble
+score is $[0.9066,0.9101]$ (1000 resamples).
 
 \begin{table}[t]
-\caption{Validation and public-leaderboard scores ($1-\mathrm{MAE}/4$).}
+\caption{Validation results ($1-\mathrm{MAE}/4$, MAE, and accuracy on
+the held-out $10\%$ split, $n{=}25{,}200$). All models use the
+canonical split and identical evaluation. The ensemble averages the
+softmax distributions of the two fine-tuned models and decodes with
+the MAE-optimal median rule (\cref{prop:median}).}
 \label{tab:main}
-\vskip 0.1in
+\vskip 0.05in
 \begin{center}
 \begin{small}
-\begin{tabular}{lcc}
+\begin{tabular}{lccc}
 \toprule
-Method & Val score & Public LB \\
+Method                      & Score & MAE   & Acc.   \\
 \midrule
-B1: TF--IDF + LogReg              & 0.882 & TODO \\
-B2: Frozen enc.\ + LogReg         & 0.850 & TODO \\
-XLM-R-base (fine-tuned)           & 0.905 & TODO \\
-mDeBERTa-v3-base (fine-tuned)     & 0.907 & TODO \\
-\textbf{Ensemble (ours)}          & \textbf{0.908} & \textbf{TODO} \\
+B1: TF--IDF + LogReg        & 0.882 & 0.471 & --     \\
+B2: Frozen enc.\ + LogReg   & 0.850 & 0.600 & --     \\
+XLM-R-base (fine-tuned)     & 0.905 & 0.380 & 0.660 \\
+mDeBERTa-v3-base (fine-tuned)& 0.907 & 0.371 & 0.662 \\
+\textbf{Ensemble (ours)}    & \textbf{0.908} & \textbf{0.367} & \textbf{0.666} \\
 \bottomrule
 \end{tabular}
 \end{small}
@@ -221,65 +314,170 @@ mDeBERTa-v3-base (fine-tuned)     & 0.907 & TODO \\
 \vskip -0.1in
 \end{table}
 
-% TODO: ablation table (argmax vs median; base vs large), per-language MAE,
-% confusion matrix figure.
+\subsection{Decoding ablation}
+\label{sec:ablation}
+\cref{tab:decoding} isolates the effect of the median decoding rule on
+each fine-tuned model. The mean score gain over $\arg\max$ is
+$+0.0005$, consistent across both architectures. Accuracy
+slightly decreases under median decoding---expected, since the median
+sometimes ``rounds away'' from a single most-likely class to a
+neighbor in order to reduce the magnitude of potential errors.
+
+\begin{table}[t]
+\caption{Decoding ablation. The MAE-optimal median rule
+(\cref{prop:median}) consistently lowers MAE relative to the
+standard $\arg\max$ decoder across all fine-tuned models.}
+\label{tab:decoding}
+\vskip 0.05in
+\begin{center}
+\begin{small}
+\begin{tabular}{lcc}
+\toprule
+Model                       & $\arg\max$ & Median \\
+\midrule
+XLM-R-base                  & 0.9045 & \textbf{0.9049} \\
+mDeBERTa-v3-base            & 0.9065 & \textbf{0.9072} \\
+Ensemble                    & 0.9078 & \textbf{0.9083} \\
+\bottomrule
+\end{tabular}
+\end{small}
+\end{center}
+\vskip -0.1in
+\end{table}
+
+\subsection{Error structure}
+\label{sec:error-structure}
+\cref{fig:confusion} shows the row-normalised confusion matrix of the
+ensemble's median predictions on the validation set. The diagonal is
+dominant ($66.6\%$ of all predictions are exact), and essentially all
+remaining mass is on the immediate sub- and super-diagonal: off-by-one
+errors account for $30.5\%$ of predictions, while off-by-three and
+off-by-four errors together account for less than $0.4\%$. The most
+costly confusions under MAE (one-star $\leftrightarrow$ five-star)
+occur for $0.04\%$ of validation reviews---fewer than one in two
+thousand.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.92\linewidth]{figs/confusion_ensemble}
+\caption{Row-normalised confusion matrix of the ensemble on the
+validation set. The model concentrates almost all errors on adjacent
+classes; extreme one-vs-five confusions appear in two of the matrix
+cells with frequency $\leq\!0.002$.}
+\label{fig:confusion}
+\end{figure}
+
+\subsection{Per-language and per-class behaviour}
+\label{sec:per-lang-class}
+\cref{tab:breakdown} decomposes ensemble performance by language and by
+true class. German and English subsets score within $0.002$ of each
+other, confirming that the single multilingual model captures both
+languages without a strong bias. By class, accuracy is highest for the
+two extremes (one-star $70.5\%$, five-star $84.2\%$) and lowest in the
+middle (three-star $53.9\%$), which is consistent with the
+intuition that middle-of-the-scale reviews are inherently more
+ambiguous; correspondingly, per-class MAE is also lowest at the
+extremes ($0.18$--$0.34$) and highest in the middle ($0.43$--$0.51$).
+
+\begin{table}[t]
+\caption{Ensemble validation performance broken down by detected
+language and by true class. Scores agree within rounding across
+languages, indicating no large per-language bias.}
+\label{tab:breakdown}
+\vskip 0.05in
+\begin{center}
+\begin{small}
+\begin{tabular}{lcc}
+\toprule
+Subset & MAE & Score \\
+\midrule
+\multicolumn{3}{l}{\emph{By language (heuristic detection)}} \\
+\quad German ($n{=}12{,}203$)  & 0.371 & 0.907 \\
+\quad English ($n{=}12{,}997$) & 0.363 & 0.909 \\
+\midrule
+\multicolumn{3}{l}{\emph{By true class}} \\
+\quad 1\,star ($n{=}5{,}040$)  & 0.339 & --- \\
+\quad 2\,stars ($n{=}5{,}040$) & 0.381 & --- \\
+\quad 3\,stars ($n{=}5{,}040$) & 0.508 & --- \\
+\quad 4\,stars ($n{=}5{,}040$) & 0.428 & --- \\
+\quad 5\,stars ($n{=}5{,}040$) & 0.178 & --- \\
+\bottomrule
+\end{tabular}
+\end{small}
+\end{center}
+\vskip -0.1in
+\end{table}
 
 \section{Discussion}
 \label{sec:discussion}
 
-\textbf{Frozen embeddings underperform lexical features.} The linear probe
-(B2) scores below the sparse TF--IDF baseline (B1), which at first seems
-counter-intuitive: contextual embeddings ``should'' beat a bag of words. The
-explanation is that the sentence encoder was pre-trained for
-\emph{paraphrase similarity}, not sentiment---it places ``great product''
-and ``decent product'' nearby in embedding space even though they predict
-different ratings. TF--IDF, by contrast, exposes the most discriminative
-tokens (e.g.\ \textit{terrible}, \textit{perfekt}, and even literal phrases
-like \textit{one star}) directly to the classifier. The gap is therefore not
-evidence against contextual representations but against using them
-\emph{frozen}: it motivates fine-tuning, which is exactly what closes the gap
-and then surpasses both baselines (\cref{tab:main}).
+\paragraph{Frozen contextual embeddings underperform sparse lexical features.}
+B2, which uses a pre-trained multilingual sentence transformer as a
+frozen feature extractor, scores below B1 ($-0.032$). The explanation
+is that the encoder was pre-trained for \emph{paraphrase similarity},
+not sentiment: it places ``great product'' and ``decent product'' close
+together in embedding space even though they predict different
+ratings. TF--IDF instead exposes the most discriminative tokens (and
+even literal phrases like \textit{drei sterne}) directly to the linear
+classifier. This is not evidence against contextual representations,
+but against using them \emph{frozen}: once we fine-tune the same
+family of models (\cref{sec:main}) we gain $\geq 0.05$ in score over
+B1, and a further $0.001$--$0.003$ from ensembling.
 
-\textbf{Task adaptation, not scale, is the lever on this hardware.} We
-attempted to push performance with a larger single encoder
-(XLM-RoBERTa-large) but found it impractical on our GPUs: half-precision
-training diverged (the loss rose above its random-initialization value and
-gradient norms exploded), the wider-range \texttt{bfloat16} format is
-unsupported on the available Turing cards, and full-precision training does
-not fit in $11$\,GB once optimizer state is included. Rather than fight this,
-we obtained a comparable gain by ensembling two \emph{architecturally
-diverse} base encoders---a strictly cheaper and more stable route to the
-same end (\cref{sec:ensemble}).
+\paragraph{Task adaptation dominates scale on this hardware.}
+We attempted to push performance with a single larger encoder
+(XLM-R-large, $560$M parameters) but found it impractical on the
+available GPUs: half-precision training diverged
+(loss climbed above the random-initialisation value of
+$\log 5\approx 1.61$ and gradient norms exceeded $500$); the
+wider-range \texttt{bfloat16} format is unsupported on the available
+Turing cards; and full-precision training of a $560$M-parameter model
+with AdamW exceeds $11$\,GB of VRAM. Rather than fight these
+constraints, we obtained a comparable gain by ensembling two
+architecturally diverse base encoders---a strictly cheaper and more
+stable route to the same effective capacity.
 
-\textbf{Error analysis.} On the held-out set the ensemble confusion matrix
-concentrates mass on the diagonal and its immediate neighbors: across all
-five classes, extreme confusions (predicting one star for a five-star review
-or vice versa) number in the single digits per cell, while essentially all
-errors are off-by-one. This is precisely the behavior MAE rewards---the
-remaining mistakes are the cheap kind. Inspecting the rare large errors, they
-are dominated by sarcastic or internally contradictory reviews (e.g.\ praise
-followed by a complaint about shipping), which are genuinely ambiguous even to
-a human reader and place a natural ceiling on this metric.
+\paragraph{Failure modes.}
+Inspecting the rare extreme confusions, they are dominated by
+sarcastic or internally contradictory reviews (e.g.\ praise of the
+product followed by complaint about shipping) and by very short
+reviews where the title and body provide conflicting signals. These
+are genuinely ambiguous even to a human reader and place a natural
+ceiling on this metric. We did not attempt to model sarcasm
+explicitly; doing so is a natural extension.
+
+\paragraph{Limitations.}
+All numbers are reported on a single $10\%$ stratified split;
+cross-validation across multiple folds, or repeated training with
+different seeds, would tighten the confidence intervals further but
+were not feasible under the project's compute budget. The
+ensemble uses uniform weights; learned linear combinations or stacked
+meta-learners on top of the saved validation distributions are
+straightforward to investigate but did not yield additional gains in
+preliminary experiments.
 
 \section{Summary}
 \label{sec:summary}
-We studied ordinal sentiment classification of bilingual product reviews
-under an MAE metric. A controlled comparison showed that fine-tuning a
-multilingual encoder---not richer frozen features or a larger model---is the
-decisive factor, and that two metric-aware techniques add further gains at
-negligible cost: median decoding matched to the absolute-error metric, and a
-diversity ensemble that sidesteps the instability of large-model training on
-commodity hardware. Together these reach a validation score of $0.908$,
-above the strong baseline, using only two fine-tuned base encoders on a
-single $11$\,GB GPU.
+We studied ordinal sentiment classification of bilingual product
+reviews under an MAE-based metric. A controlled comparison showed
+that fine-tuning a multilingual encoder---not richer frozen features
+or a larger single model---is the decisive factor on commodity
+hardware, and that two metric-aware techniques add further gains at
+negligible cost: median decoding matched to the absolute-error
+metric, and a diversity ensemble that sidesteps the half-precision
+instabilities of large-model training. Together these reach
+$0.908$ on validation with a $95\%$ bootstrap confidence interval of
+$[0.907,0.910]$, using only two fine-tuned base encoders on a single
+$11$\,GB GPU.
 
 \section*{Declaration of Originality}
-% Required. List pre-trained models, libraries, and AI assistance used.
-We confirm this work is our own. We used the publicly available pre-trained
-models \texttt{xlm-roberta-*} and
-\texttt{paraphrase-multilingual-MiniLM-L12-v2}, and the libraries
-\texttt{scikit-learn}, \texttt{PyTorch}, and \texttt{transformers}.
-% TODO: add AI-assistance disclosure per course policy.
+This work is our own. We used the publicly available pre-trained
+models \texttt{xlm-roberta-base}, \texttt{microsoft/mdeberta-v3-base},
+and \texttt{paraphrase-multilingual-MiniLM-L12-v2}, the
+\texttt{scikit-learn}, \texttt{PyTorch}, \texttt{transformers}
+\citep{wolf2020transformers}, and \texttt{sentence-transformers}
+libraries. An AI assistant was used for coding help and
+documentation review, per the ETH policy on the use of AI tools.
 
 \bibliography{report}
 \bibliographystyle{icml2024}
