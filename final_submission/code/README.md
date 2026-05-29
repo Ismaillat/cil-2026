@@ -16,52 +16,56 @@ classical / shallow baselines (TF-IDF + LogReg; frozen MiniLM + LogReg;
 a Kim-style CNN; a BiLSTM; gradient boosting on TF-IDF+SVD; gradient
 boosting on hand-crafted surface features); two are multilingual
 transformers fine-tuned on the whole training set (XLM-R-base,
-mDeBERTa-v3-base); two are **monolingual specialists**
-fine-tuned on the language-filtered halves (DeBERTa-v3-large on the
-English reviews, gBERT-large on the German reviews). Every model is
-decoded with the **median rule**, which is Bayes-optimal under MAE on
-ordinal integer labels. The aggregator we ship fits two simplex weight
-vectors `w_en` and `w_de` directly minimising MAE-after-median on the
-validation hold-out; at inference, the language of each review (umlaut +
+mDeBERTa-v3-base); two are **monolingual specialists** fine-tuned on
+the language-filtered halves (DeBERTa-v3-large on the English reviews,
+gBERT-large on the German reviews). Every model is decoded with the
+**median rule**, which is Bayes-optimal under MAE on ordinal integer
+labels. The aggregator we ship fits two simplex weight vectors `w_en`
+and `w_de` directly minimising MAE-after-median on the validation
+hold-out; at inference, the language of each review (umlaut +
 function-word heuristic, the same at train and test time) selects which
-weight vector is applied. See `report/report.tex` for details.
+weight vector is applied.
 
 
 ## Repository layout
 
 ```
-final_submission/
+.
 ├── README.md                ← this file
-├── report/
-│   ├── report.tex           ← 4-page workshop-style paper
-│   ├── report.bib           ← BibTeX references
-│   ├── make_figures.py      ← regenerates every figure used in the paper
-│   ├── figs/                ← .pdf figures used by report.tex
-│   └── *.sty / *.bst        ← ICML 2024 LaTeX style files
-└── code/
-    ├── requirements.txt
-    ├── b1.py                ← B1  TF-IDF + LogReg
-    ├── b2.py                ← B2  Frozen MiniLM + LogReg
-    ├── train_cnn_big.py     ← B3  Kim-style CNN
-    ├── train_bilstm.py      ← B4  Bidirectional LSTM
-    ├── b5_gbm.py            ← B5  HistGradientBoosting on TF-IDF + SVD
-    ├── b6_surface.py        ← B6  HistGradientBoosting on surface features
-    ├── train_model.py       ← Generic HF fine-tuner (used for the 4 transformers)
-    ├── split_by_language.py ← Splits train.csv into train_en.csv / train_de.csv
-    ├── hybrid.py            ← Specialist-only language router (LB 0.910)
-    ├── meta.py              ← Six meta-learners + final submission CSV
-    ├── verify_decoding.py   ← argmax vs median deltas per model (§3.1)
-    ├── verify_per_lang.py   ← per-language ensemble scores + Jaccard (§4.3, §4.5)
-    ├── bootstrap_ci.py      ← 95% confidence interval on the val ensemble (§5)
-    ├── make_individual_submissions.py ← one Kaggle CSV per base model
-    ├── eda.ipynb            ← Exploratory data analysis
-    ├── b1_tfidf_logreg.ipynb
-    ├── b2_sentemb_logreg.ipynb
-    ├── data/
-    │   ├── val_indices.npy  ← Canonical 10% stratified hold-out (seed 42)
-    └── preds/
-        └── {model}_{val,test}.npy  ← softmax probabilities for each model
+├── requirements.txt
+├── b1.py                    ← B1  TF-IDF + LogReg
+├── b2.py                    ← B2  Frozen MiniLM + LogReg
+├── train_cnn_big.py         ← B3  Kim-style CNN
+├── train_bilstm.py          ← B4  Bidirectional LSTM
+├── b5_gbm.py                ← B5  HistGradientBoosting on TF-IDF + SVD
+├── b6_surface.py            ← B6  HistGradientBoosting on surface features
+├── train_model.py           ← Generic HF fine-tuner (used for the 4 transformers)
+├── split_by_language.py     ← Splits train.csv into train_en.csv / train_de.csv
+├── hybrid.py                ← Specialist-only language router (LB 0.910)
+├── meta.py                  ← Six meta-learners + final submission CSV
+├── verify_decoding.py       ← argmax vs median deltas per model (§3.1)
+├── verify_per_lang.py       ← per-language ensemble scores + Jaccard (§4.3, §4.5)
+├── bootstrap_ci.py          ← 95% confidence interval on the val ensemble (§5)
+├── make_individual_submissions.py ← one Kaggle CSV per base model
+├── make_figures.py          ← regenerates every figure used in the paper
+├── eda.ipynb                ← Exploratory data analysis
+├── b1_tfidf_logreg.ipynb    ← B1 notebook (same logic as b1.py)
+├── b2_sentemb_logreg.ipynb  ← B2 notebook (same logic as b2.py)
+├── data/
+│   └── val_indices.npy      ← Canonical 10% stratified hold-out (seed 42)
+└── preds/
+    └── {model}_{val,test}.npy  ← softmax probabilities for each model
 ```
+
+**Before running anything, download the competition CSVs from Kaggle
+and place them in `data/`**:
+
+```
+data/train.csv   (id, sentence, label)
+data/test.csv    (id, sentence)
+```
+
+These are not shipped in the zip (they are the competition data).
 
 `preds/` ships pre-computed softmax outputs for all ten models on the
 canonical validation split and on the test set, so the meta-learner can
@@ -75,7 +79,6 @@ just `np.save`-format binary tensors).
 ## Quick start: reproduce the final submission
 
 ```bash
-cd code/
 pip install -r requirements.txt
 # Put the official competition CSVs in data/ first:
 #   data/train.csv  (id, sentence, label)
@@ -93,11 +96,11 @@ per-language, stacked LogReg, stacked GBM, gating MLP), prints the
 
 ## Full reproduction (from scratch)
 
-Below is the exact sequence of commands. Each step assumes you are in
-`code/`, that `data/train.csv` and `data/test.csv` are present, and that
-your environment has the packages listed in `requirements.txt`. The four
-transformer fine-tunes were run on a single 11 GB GPU (RTX 2080 Ti); the
-rest run in minutes on a laptop.
+Below is the exact sequence of commands. Each step assumes
+`data/train.csv` and `data/test.csv` are present and that your
+environment has the packages listed in `requirements.txt`. The four
+transformer fine-tunes were run on a single 11 GB GPU (RTX 2080 Ti);
+the rest run in minutes on a laptop.
 
 ### 1. Build the canonical validation split
 
@@ -105,9 +108,9 @@ rest run in minutes on a laptop.
 python b1.py           # first run also writes data/val_indices.npy
 ```
 
-`b1.py` creates `data/val_indices.npy` (10 % stratified, seed 42) on its
-first invocation; every other script reads the same file, so all models
-are scored on exactly the same 25 200 reviews.
+`b1.py` creates `data/val_indices.npy` (10 % stratified, seed 42) on
+its first invocation; every other script reads the same file, so all
+models are scored on exactly the same 25 200 reviews.
 
 ### 2. Classical / shallow baselines (CPU, ~minutes each)
 
@@ -189,11 +192,49 @@ decodes by median, and writes
 python meta.py --submission meta_weighted_mae_per_lang.csv
 ```
 
-`meta.py` auto-discovers every `preds/*_val.npy` it finds, evaluates all
-six aggregators by 5-fold stratified OOF on the validation set, refits
-the chosen one on the full hold-out, and writes the final submission CSV
-under `submissions/`. The aggregator that produced the leaderboard
-submission is **`weighted-MAE per-language`**.
+`meta.py` auto-discovers every `preds/*_val.npy` it finds, evaluates
+all six aggregators by 5-fold stratified OOF on the validation set,
+refits the chosen one on the full hold-out, and writes the final
+submission CSV under `submissions/`. The aggregator that produced the
+leaderboard submission is **`weighted-MAE per-language`**.
+
+
+## Reproducing each table and figure of the paper
+
+Every numerical claim in the report can be regenerated from
+`preds/*.npy` without retraining:
+
+| Result in the paper | Command |
+|---|---|
+| **Table 1**, *Val* + *EN/DE* columns for the 10 base models | `python make_figures.py` (prints per-language scores) |
+| **Table 1**, row *Hybrid (specialists only)* | `python hybrid.py` → `submissions/hybrid_deberta_en_gbert_large_de.csv` (val 0.911 / EN 0.914 / DE 0.908) |
+| **Table 1**, row *Weighted-MAE per-lang* (Val / EN / DE / LB) | `python verify_per_lang.py` (prints 0.913 / 0.915 / 0.911) and `python meta.py` (LB 0.911 CSV) |
+| **Table 1**, *Public LB* column for each base model | `python make_individual_submissions.py` (writes 10 CSVs under `submissions/individual/`, one per model) |
+| **Table 2**, all six OOF rows | `python meta.py` (Uniform 0.9066, weighted_mae 0.9121, weighted_mae_per_lang 0.9121, LogReg 0.9116, GBM 0.9112, gating_mlp 0.9072) |
+| **Section 3.1**, argmax → median deltas | `python verify_decoding.py` |
+| **Section 4.1**, XLM-R+mDeBERTa uniform 0.908 | `python verify_per_lang.py` |
+| **Section 4.3**, per-language weights $w_{\text{en}}, w_{\text{de}}$ | `python meta.py` prints the two simplex vectors |
+| **Section 4.3**, Jaccard 0.60 on val_DE between DeBERTa-EN and mDeBERTa | `python verify_per_lang.py` |
+| **Section 4.4**, Jaccard matrix on whole val | `python make_figures.py` (prints the 10x10 matrix) |
+| **Section 4.5**, 0↔4 confusion rate per language | `python verify_per_lang.py` (EN 0.09 %, DE 0.12 %) |
+| **Section 5**, 95% bootstrap CI [0.9115, 0.9148] | `python bootstrap_ci.py` |
+| **Figures 1–5** | `python make_figures.py` (writes to `figs/`) |
+
+The full sequence to regenerate everything:
+
+```bash
+python meta.py                          # Tables 1 (final row), 2; Figure 2 weights; meta_*.csv
+python hybrid.py                        # Table 1 hybrid row
+python verify_decoding.py               # Section 3.1 deltas
+python verify_per_lang.py               # Table 1 per-lang row, §4.3 Jaccard, §4.5 confusion
+python bootstrap_ci.py                  # Section 5 confidence interval
+python make_individual_submissions.py   # 10 per-model Kaggle CSVs
+python make_figures.py                  # all six PDF figures + §4.4 Jaccard matrix
+```
+
+Everything runs in under five minutes on CPU (the gating MLP inside
+`meta.py` benefits from a GPU; it is skipped gracefully if the cached
+MiniLM embeddings are absent).
 
 
 ## Notes on reproducibility
@@ -210,8 +251,8 @@ submission is **`weighted-MAE per-language`**.
   single epoch are sufficient to land on the reported validation score
   to within ±0.001; the third epoch tightens the calibration that the
   meta-learner exploits.
-* `make_figures.py` regenerates every figure from `code/preds/*.npy` and
-  `code/data/train.csv`. The numbers it prints (per-language single-model
+* `make_figures.py` regenerates every figure from `preds/*.npy` and
+  `data/train.csv`. The numbers it prints (per-language single-model
   scores, Jaccard error overlaps) match Table 1 / Section 4.4 of the
   report to the millième.
 * The gating MLP (`[5]` in `meta.py`) needs both the cached MiniLM
@@ -220,43 +261,22 @@ submission is **`weighted-MAE per-language`**.
   to produce the submitted CSV.
 
 
-## Reproducing each table and figure of the paper
+## Verifying
 
-Every numerical claim in the report can be regenerated from
-`code/preds/*.npy` without retraining. Run these from `code/`:
+Without retraining anything, running `python meta.py` should print:
 
-| Result in the paper | Command |
-|---|---|
-| **Table 1**, *Val* + *EN/DE* columns for the 10 base models | `python make_figures.py` (prints per-language scores) |
-| **Table 1**, row *Hybrid (specialists only)* | `python hybrid.py` → `submissions/hybrid_deberta_en_gbert_large_de.csv` (val 0.911 / EN 0.914 / DE 0.908) |
-| **Table 1**, row *Weighted-MAE per-lang* (Val / EN / DE / LB) | `python verify_per_lang.py` (prints 0.913 / 0.915 / 0.911) and `python meta.py` (LB 0.911 CSV) |
-| **Table 1**, *Public LB* column for each base model | `python make_individual_submissions.py` (writes 10 CSVs under `submissions/individual/`, one per model) |
-| **Table 2**, all six OOF rows | `python meta.py` (Uniform 0.9066, weighted_mae 0.9121, weighted_mae_per_lang 0.9121, LogReg 0.9116, GBM 0.9112, gating_mlp 0.9072) |
-| **Section 3.1**, argmax → median deltas | `python verify_decoding.py` |
-| **Section 4.3**, per-language weights $w_{\text{en}}, w_{\text{de}}$ | `python meta.py` prints the two simplex vectors |
-| **Section 4.1**, XLM-R+mDeBERTa uniform 0.908 | `python verify_per_lang.py` |
-| **Section 4.3**, Jaccard 0.60 on val_DE between DeBERTa-EN and mDeBERTa | `python verify_per_lang.py` |
-| **Section 4.4**, Jaccard matrix on whole val | `python make_figures.py` (prints the 10x10 matrix) |
-| **Section 4.5**, 0↔4 confusion rate per language | `python verify_per_lang.py` (EN 0.09 %, DE 0.12 %) |
-| **Section 5**, 95% bootstrap CI [0.9115, 0.9148] | `python bootstrap_ci.py` |
-| **Figure 1a, 1b**, **Figure 2**, **Figure 3**, **Figure 4**, **Figure 5** | `python ../report/make_figures.py` |
-
-The full sequence to regenerate everything:
-
-```bash
-cd code/
-python meta.py                     # Tables 1 (final row), 2; Figure 2 weights; meta_*.csv
-python hybrid.py                   # Table 1 hybrid row
-python verify_decoding.py          # Section 3.1 deltas
-python verify_per_lang.py          # Tables 1 per-lang row, §4.3 Jaccard, §4.5 confusion
-python bootstrap_ci.py             # Section 5 confidence interval
-python make_individual_submissions.py   # 10 per-model Kaggle CSVs
-python ../report/make_figures.py   # all six PDF figures + §4.4 Jaccard matrix
+```
+UNIFORM AVG / median               score=0.9066
+weighted_mae (OOF)                 score=0.9121  (per-fold std 0.0015)
+weighted_mae_per_lang (OOF)        score=0.9121  (per-fold std 0.0017)
+logreg (OOF)                       score=0.9116  (per-fold std 0.0012)
+gbm (OOF)                          score=0.9112  (per-fold std 0.0013)
+gating_mlp (OOF)                   score=0.9072  (per-fold std 0.0011)
 ```
 
-Everything runs in under five minutes on CPU (the gating MLP inside
-`meta.py` benefits from a GPU; it is skipped gracefully if the cached
-MiniLM embeddings are absent).
+— which is exactly Table 2 of the paper. `python hybrid.py` reproduces
+the "Hybrid (specialists only)" row of Table 1 (val 0.911, EN 0.914,
+DE 0.908).
 
 
 ## Outputs
@@ -271,12 +291,13 @@ meta_gbm.csv                     ← stacked HistGradientBoosting
 meta_gating.csv                  ← gating MLP (Wasserstein-1 loss, 3-seed avg)
 ```
 
-The validation scores printed by `meta.py` should reproduce the numbers
-in Table 2 of the paper to within the per-fold standard deviation.
+The validation scores printed by `meta.py` should reproduce the
+numbers in Table 2 of the paper to within the per-fold standard
+deviation.
 
 
 ## License
 
 The code in this repository is released under the MIT license. The
-pre-trained models we fine-tune are distributed under their own licenses
-on the Hugging Face Hub.
+pre-trained models we fine-tune are distributed under their own
+licenses on the Hugging Face Hub.

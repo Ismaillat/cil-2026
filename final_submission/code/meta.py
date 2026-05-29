@@ -438,9 +438,10 @@ def kfold_oof_gating(preds_val, preds_test, y_val, emb_val, emb_test,
     """
     n = y_val.shape[0]
     skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed)
-    device = torch.device('cuda' if torch.cuda.is_available() else
-                          ('mps' if torch.backends.mps.is_available()
-                           else 'cpu'))
+    # We do not use MPS: the Wasserstein-1 loss relies on `aten::sgn`,
+    # which falls back to CPU on Apple Silicon and triggers a tensor-slicing
+    # assertion in the autograd path on torch<2.3.
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     feats_val = gating_features(emb_val, preds_val, lang=lang_val)
     feats_test = gating_features(emb_test, preds_test, lang=lang_test)

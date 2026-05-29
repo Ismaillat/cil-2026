@@ -1,9 +1,9 @@
 """Generate every figure used in the report from preds/ and data/.
 
-Run from anywhere:
-    python report/make_figures.py
-Reads code/data/train.csv, code/data/val_indices.npy, code/preds/*.npy
-and writes the .pdf figures to report/figs/.
+Run from the code/ directory:
+    python make_figures.py
+Reads data/train.csv, data/val_indices.npy, preds/*.npy and writes
+the .pdf figures to figs/.
 """
 import os
 import re
@@ -13,10 +13,8 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.metrics import confusion_matrix, mean_absolute_error
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECT = os.path.dirname(HERE)
-ROOT = os.path.join(PROJECT, 'code')        # code/ holds data/ and preds/
-FIGDIR = os.path.join(HERE, 'figs')
+ROOT = '.'
+FIGDIR = 'figs'
 os.makedirs(FIGDIR, exist_ok=True)
 
 plt.rcParams.update({
@@ -274,7 +272,8 @@ ax.axvline(0.906, color='#c4302b', linestyle='--', linewidth=1.0,
 for y, v in zip(ys, vals):
     ax.text(v + 0.0007, y, f'{v:.3f}', va='center', fontsize=7)
 ax.set_xlabel('validation score $1 - \\mathrm{MAE}/4$')
-ax.legend(loc='upper left', frameon=False, fontsize=6.5)
+ax.legend(loc='lower right', frameon=False, fontsize=6.5,
+          bbox_to_anchor=(1.0, 1.01))
 ax.invert_yaxis()
 fig.tight_layout()
 fig.savefig(os.path.join(FIGDIR, 'progression.pdf'), bbox_inches='tight')

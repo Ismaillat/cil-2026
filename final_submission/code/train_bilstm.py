@@ -13,8 +13,10 @@ Architecture:
   * head        : dropout 0.4 -> linear -> 5 classes
   * regularisation: label smoothing 0.1, weight decay 1e-4
 
-Drop-in compatible:
-    sbatch run.slurm train_bilstm.py --name bilstm
+Run as
+
+    python train_bilstm.py --name bilstm
+
 writes preds/bilstm_val.npy and preds/bilstm_test.npy.
 """
 

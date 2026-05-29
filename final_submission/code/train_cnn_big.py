@@ -12,10 +12,9 @@ parallel n-gram detectors followed by max-over-time pooling.
   * sequence    : max_length 256 tokens
   * optimisation: AdamW lr 5e-4, batch 64, 10 epochs, model selection on val score
 
-~15M trainable parameters.  Drop-in compatible with the rest of the
-pipeline:
+~15M trainable parameters.  Run as
 
-    sbatch run.slurm train_cnn_big.py --name cnn_big
+    python train_cnn_big.py --name cnn_big
 
 writes  preds/cnn_big_val.npy  and  preds/cnn_big_test.npy.
 """
