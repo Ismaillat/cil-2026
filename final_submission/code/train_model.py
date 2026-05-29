@@ -1,0 +1,181 @@
+"""Fine-tune any Hugging Face encoder for 5-class ordinal sentiment.
+
+Used for all four fine-tuned transformers in the pipeline:
+  * xlm-roberta-base                       (multilingual baseline)
+  * microsoft/mdeberta-v3-base             (multilingual baseline)
+  * microsoft/deberta-v3-large + train_en  (English specialist)
+  * deepset/gbert-large       + train_de   (German specialist)
+
+The script always evaluates on the canonical 10 % stratified hold-out
+defined by data/val_indices.npy (created once by b1.py and shared
+across every model), so validation scores are directly comparable.
+It saves the val and test softmax probabilities as numpy arrays in
+preds/{name}_{val,test}.npy and prints the resulting argmax/median
+scores on val.
+
+Typical invocations:
+
+    python train_model.py \
+        --model xlm-roberta-base --name xlmr_base \
+        --epochs 3 --batch 16 --lr 2e-5 --max_length 256
+
+    python train_model.py \
+        --model microsoft/deberta-v3-large --name deberta_v3_large_en \
+        --train_file data/train_en.csv \
+        --epochs 2 --batch 8 --grad_accum 8 \
+        --lr 1e-5 --warmup_ratio 0.1 --max_length 192 \
+        --gradient_checkpointing
+"""
+import argparse
+import os
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    Trainer,
+    TrainingArguments,
+)
+from sklearn.metrics import mean_absolute_error
+
+
+class ReviewDataset(Dataset):
+    def __init__(self, texts, tokenizer, max_length, labels=None):
+        self.texts = list(texts)
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.labels = None if labels is None else list(labels)
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, i):
+        enc = self.tokenizer(self.texts[i], truncation=True,
+                             max_length=self.max_length)
+        item = {k: torch.tensor(v) for k, v in enc.items()}
+        if self.labels is not None:
+            item['labels'] = torch.tensor(int(self.labels[i]), dtype=torch.long)
+        return item
+
+
+def parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--model', required=True,
+                    help='HuggingFace model id (e.g. xlm-roberta-base)')
+    ap.add_argument('--name', required=True,
+                    help='output prefix for preds/{name}_{val,test}.npy')
+    ap.add_argument('--epochs', type=int, default=3)
+    ap.add_argument('--batch', type=int, default=16)
+    ap.add_argument('--grad_accum', type=int, default=1)
+    ap.add_argument('--lr', type=float, default=2e-5)
+    ap.add_argument('--warmup_ratio', type=float, default=0.06)
+    ap.add_argument('--max_length', type=int, default=256)
+    ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--slow_tokenizer', action='store_true',
+                    help='use the SentencePiece slow tokenizer; needed for '
+                         'mDeBERTa-v3 on some transformers versions')
+    ap.add_argument('--gradient_checkpointing', action='store_true',
+                    help='trade compute for memory; needed to fit ~300M+ '
+                         'models on an 11 GB GPU')
+    ap.add_argument('--label_smoothing', type=float, default=0.0)
+    ap.add_argument('--train_file', default='data/train.csv',
+                    help='custom training CSV; if not data/train.csv it must '
+                         'already exclude the val rows (use split_by_language.py)')
+    return ap.parse_args()
+
+
+def softmax(x):
+    e = np.exp(x - x.max(axis=1, keepdims=True))
+    return e / e.sum(axis=1, keepdims=True)
+
+
+def median_round(probs):
+    """Bayes-optimal point predictor under absolute error on integer labels."""
+    return np.argmax(np.cumsum(probs, axis=1) >= 0.5, axis=1)
+
+
+def main():
+    args = parse_args()
+
+    # The validation split is *always* taken from the official train.csv at
+    # the canonical val_indices, regardless of --train_file. This keeps
+    # validation comparable across every model variant we train.
+    train_official = pd.read_csv('data/train.csv')
+    test = pd.read_csv('data/test.csv')
+    val_idx = np.load('data/val_indices.npy')
+    val_df = train_official.loc[val_idx].reset_index(drop=True)
+    y_val = val_df['label'].values
+
+    if args.train_file == 'data/train.csv':
+        train_df = train_official.drop(index=val_idx).reset_index(drop=True)
+    else:
+        # Language-filtered file produced by split_by_language.py.
+        train_df = pd.read_csv(args.train_file).reset_index(drop=True)
+        print(f'using custom train file {args.train_file}: '
+              f'{len(train_df)} rows')
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model, use_fast=not args.slow_tokenizer)
+    train_ds = ReviewDataset(train_df['sentence'], tokenizer,
+                             args.max_length, train_df['label'])
+    val_ds = ReviewDataset(val_df['sentence'], tokenizer,
+                           args.max_length, val_df['label'])
+    test_ds = ReviewDataset(test['sentence'], tokenizer, args.max_length)
+
+    model = AutoModelForSequenceClassification.from_pretrained(
+        args.model, num_labels=5)
+    # The Trainer enables gradient checkpointing through the TrainingArguments
+    # below with use_reentrant=False; calling model.gradient_checkpointing_enable()
+    # here would conflict with the Trainer's wrapping on torch 2.x.
+
+    def compute_metrics(eval_pred):
+        logits, labels = eval_pred
+        preds = np.argmax(logits, axis=-1)
+        mae = mean_absolute_error(labels, preds)
+        return {'score': 1 - mae / 4, 'mae': mae}
+
+    targs = TrainingArguments(
+        output_dir=f'runs/{args.name}',
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch,
+        per_device_eval_batch_size=64,
+        gradient_accumulation_steps=args.grad_accum,
+        learning_rate=args.lr,
+        weight_decay=0.01,
+        warmup_ratio=args.warmup_ratio,
+        label_smoothing_factor=args.label_smoothing,
+        fp16=torch.cuda.is_available(),
+        max_grad_norm=1.0,
+        gradient_checkpointing=args.gradient_checkpointing,
+        gradient_checkpointing_kwargs=(
+            {'use_reentrant': False} if args.gradient_checkpointing else None),
+        eval_strategy='epoch',
+        save_strategy='no',
+        seed=args.seed,
+        report_to=[],
+        logging_steps=200,
+        dataloader_num_workers=0,
+    )
+    trainer = Trainer(
+        model=model, args=targs,
+        train_dataset=train_ds, eval_dataset=val_ds,
+        processing_class=tokenizer, compute_metrics=compute_metrics,
+    )
+    trainer.train()
+
+    os.makedirs('preds', exist_ok=True)
+    val_probs = softmax(trainer.predict(val_ds).predictions)
+    test_probs = softmax(trainer.predict(test_ds).predictions)
+    np.save(f'preds/{args.name}_val.npy', val_probs)
+    np.save(f'preds/{args.name}_test.npy', test_probs)
+
+    for tag, pred in [('argmax', np.argmax(val_probs, 1)),
+                      ('median', median_round(val_probs))]:
+        mae = mean_absolute_error(y_val, pred)
+        print(f'[{args.name} {tag}] score={1 - mae / 4:.4f} mae={mae:.4f}')
+
+
+if __name__ == '__main__':
+    main()

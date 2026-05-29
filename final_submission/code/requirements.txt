@@ -1,0 +1,15 @@
+numpy
+pandas
+matplotlib
+scikit-learn
+jupyter
+
+# Deep learning
+torch
+transformers==4.57.6
+accelerate
+sentence-transformers
+
+# Tokenizer deps (mDeBERTa-v3 SentencePiece)
+sentencepiece
+protobuf
